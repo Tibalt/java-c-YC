@@ -1,0 +1,363 @@
+#include "main.h"
+
+#define   _MAX_KEYMAP_NUM_   10 //共享内存的块数
+
+#define   SOE_SHM_KEY    0x5235   //SOE共享内存键值
+#define   YC_SHM_KEY     0x5236   //遥测数据共享内存键值
+#define   YX_SHM_KEY     0x5237   //遥信数据共享内存键值
+#define   YK_SHM_KEY     0x5238   //遥控数据共享内存键值
+#define   YCDB_SHM_KEY   0x5239   //扰动数据共享内存键值
+#define   ONLINE_SHM_KEY 0x523A
+#define  DEVINFO_SHM_KEY 0x523B
+#define CALL_SHM_KEY	 0x523C
+#define TIMESYN_SHM_KEY	 0x523D
+#define FILEDOWN_SHM_KEY 0x523E
+#define FILEUP_SHM_KEY   0x523F
+
+struct AllProcess__ AllProcess;
+
+_YX 	YX[MAXDEVNUM];
+
+_SOE    SOE[MAXDEVNUM];
+
+_YC     YC[MAXDEVNUM];
+
+_YK YK[MAXDEVNUM][2];
+
+S_CALL CALL[MAXDEVNUM][2];
+
+S_TIMESYN TIMESYN[MAXDEVNUM][2];
+
+S_DEV_INFO DEV_INFO[MAXDEVNUM];
+
+FILEOPERATE FileOper[MAXDEVNUM];
+
+FILESTRUP DevFile[MAXDEVNUM];
+
+_ONLINE Online[MAXDEVNUM];
+
+S_COM_PARA COM_PARA[MAXDEVNUM];
+
+
+static int DataPool_semid[_MAX_KEYMAP_NUM_] = {0};
+static int DataPool_shmid[_MAX_KEYMAP_NUM_] = {0};
+static unsigned int DataPool_MntAdr[_MAX_KEYMAP_NUM_] = {0};
+static int DataPool_Key_SEM[_MAX_KEYMAP_NUM_] = {
+0x9001,0x9002,0x9003,0x9004,0x9005,0x9006,0x9007,0x9008,0x9009,0x900A
+};
+
+typedef struct
+{
+    char            ChrFlg;
+    unsigned int    Key;
+    unsigned int    pLocalAdr;
+    unsigned int    Len;
+    unsigned int    ppMountAdr;
+    unsigned int    pSemID;
+    unsigned int    PShmID;
+}_Key;
+_Key SHKeyMap[] = {
+    {'X', YX_SHM_KEY,     (unsigned int)&YX,        sizeof(YX),       (unsigned int)&DataPool_MntAdr[0],  (unsigned int)&DataPool_semid[0]},
+    {'E', SOE_SHM_KEY,    (unsigned int)&SOE,       sizeof(SOE),      (unsigned int)&DataPool_MntAdr[1],  (unsigned int)&DataPool_semid[1]},
+    {'C', YC_SHM_KEY,     (unsigned int)&YC,        sizeof(YC),       (unsigned int)&DataPool_MntAdr[2],  (unsigned int)&DataPool_semid[2]},
+	{'K', YK_SHM_KEY,	  (unsigned int)&YK, 	    sizeof(YK),		  (unsigned int)&DataPool_MntAdr[3],  (unsigned int)&DataPool_semid[3]},
+	{0, ONLINE_SHM_KEY,	  (unsigned int)&Online, 	sizeof(Online),	  (unsigned int)&DataPool_MntAdr[4],  (unsigned int)&DataPool_semid[4]},
+	{1, DEVINFO_SHM_KEY,  (unsigned int)&DEV_INFO,	sizeof(DEV_INFO), (unsigned int)&DataPool_MntAdr[5],  (unsigned int)&DataPool_semid[5]},
+	{2, CALL_SHM_KEY,     (unsigned int)&CALL,	    sizeof(CALL), 	  (unsigned int)&DataPool_MntAdr[6],  (unsigned int)&DataPool_semid[6]},
+	{3, TIMESYN_SHM_KEY,  (unsigned int)&TIMESYN,	sizeof(TIMESYN),  (unsigned int)&DataPool_MntAdr[7],  (unsigned int)&DataPool_semid[7]},
+    {4, FILEDOWN_SHM_KEY, (unsigned int)&FileOper,	sizeof(FileOper),  (unsigned int)&DataPool_MntAdr[8],  (unsigned int)&DataPool_semid[8]},
+    {5, FILEUP_SHM_KEY,   (unsigned int)&DevFile,	sizeof(DevFile),  (unsigned int)&DataPool_MntAdr[9],  (unsigned int)&DataPool_semid[9]}
+
+	//{ 22,  ALLPRC_SHM_KEY,  (unsigned int)&AllProcess, sizeof(AllProcess),    (unsigned int)&DataPool_MntAdr[27],   (unsigned int)&DataPool_semid[27]},
+
+};
+/*
+  参数processnum
+  0  表示统计进程
+  1  表示参数进程
+  2  表示104进程
+  3  表示101进程
+  4  表示采集进程
+  5  预留
+  255表示写数据全部关闭
+ 参数sem_id 表示信号量集合的ID
+ 每个共享内存对应一个信号量集
+ */
+void sem_p(int sem_id,int processnum)
+{
+    struct sembuf sem_p[PROCESSNUM];
+    unsigned int i = 0;
+    if(processnum == 255)//写操作 关闭整个信号量集
+    {
+        for(i=0; i<PROCESSNUM; i++)
+        {
+            sem_p[i].sem_num = i;
+            sem_p[i].sem_op  = -1;
+            sem_p[i].sem_flg = SEM_UNDO;
+        }
+        if(semop(sem_id,&sem_p[0],PROCESSNUM) == -1)
+            printf("p operation is fail\n");        
+    }
+    else
+    {
+        sem_p[processnum].sem_num = processnum;
+        sem_p[processnum].sem_op  = -1;
+        sem_p[processnum].sem_flg = SEM_UNDO; 
+        if(semop(sem_id,&sem_p[processnum],1) == -1)
+            printf("p operation is fail\n");         
+    }
+}
+void sem_v(int sem_id,int processnum)
+{
+    struct sembuf sem_p[PROCESSNUM];
+    unsigned int i = 0;
+    if(processnum == 255)//写操作 解锁整个信号量集
+    {
+        for(i=0; i<PROCESSNUM; i++)
+        {
+            sem_p[i].sem_num = i;
+            sem_p[i].sem_op  = 1;
+            sem_p[i].sem_flg = SEM_UNDO;
+        }
+        if(semop(sem_id,&sem_p[0],PROCESSNUM) == -1)
+            printf("v operation is fail\n");        
+    }
+    else
+    {
+        sem_p[processnum].sem_num = processnum;
+        sem_p[processnum].sem_op  = 1;
+        sem_p[processnum].sem_flg = SEM_UNDO; 
+        if(semop(sem_id,&sem_p[processnum],1) == -1)
+            printf("v operation is fail\n");         
+    }    
+}
+
+//信号量集的创建及初始化
+void Sem_init(void)
+{
+    unsigned int i,j;
+    union semun
+    {
+        int val;
+        struct semid_ds *buf;
+        ushort *array;
+    }sem_u;
+    sem_u.val=1;
+    
+    for(i=0; i<_MAX_KEYMAP_NUM_; i++)
+    {
+        DataPool_semid[i] = semget((key_t)DataPool_Key_SEM[i],PROCESSNUM,0666|IPC_CREAT);
+        if(DataPool_semid[i] == -1)
+        {
+            fprintf(stderr,"get sem is fail error:%s\n\a",strerror(errno));
+        }
+        for(j=0; j<PROCESSNUM; j++)
+        {
+            semctl(DataPool_semid[i],j,SETVAL,sem_u);     //信号量初始化为1；可用状态   
+        }
+    }   
+}
+
+void Shared_memory_mount(void)
+{
+    int i = 0, shmid = 0;
+   // printf("mount begin!\n");
+    for(i=0; i<_MAX_KEYMAP_NUM_; i++)
+    {
+        //printf("0x%x\n", SHKeyMap[i].ppMountAdr);
+        shmid = shmget((key_t)SHKeyMap[i].Key, SHKeyMap[i].Len, 0666|IPC_CREAT);    //creat shared memory
+        if(shmid < 0)
+        {
+            perror("get shm ipc_id error!\n");
+            exit(0);
+            continue;
+        }
+        
+        *((unsigned int *)(SHKeyMap[i].ppMountAdr)) = (unsigned int)((void*)shmat(shmid,0,0));
+        //printf("apply addr is :0x%x    0x%x\n",SHKeyMap[i].ppMountAdr, *((unsigned int *)(SHKeyMap[i].ppMountAdr)));
+        DataPool_shmid[i] = shmid;
+        if((int)SHKeyMap[i].ppMountAdr == -1)
+        {
+            fprintf(stderr,"share shm is fail error:%s\n\a",strerror(errno));
+            SHKeyMap[i].ppMountAdr = 0;
+        }
+        //printf("mount %d is ok!\n", i);
+    }
+    
+    Sem_init();
+    //printf("mount end!\n");
+}
+
+// ----------- delete --------- //
+
+/*
+void Shared_memory_Release(void)
+{
+    int shmid = 0, i = 0;
+
+    const void *shmaddr;
+    for(i=0; i<_MAX_KEYMAP_NUM_; i++)
+    {
+        shmaddr = (const void *)SHKeyMap[i].ppMountAdr;
+        shmid = shmdt(shmaddr);
+        if(shmid != 0)
+        {
+            printf("shmaddr Release is fail!\n");
+            
+            printf("ppMountAdr is :0x%x\n", (unsigned int)shmaddr);
+        }
+    }
+}
+*/
+/*
+ * 解除共享内存与本进程数据空间的映射关系
+ */
+void Shared_memory_Release(void)
+{
+    int shmid = 0, i = 0;
+    shmid = shmid;
+    const void *shmaddr;
+    for(i=0; i<_MAX_KEYMAP_NUM_; i++) 
+    {
+        shmaddr = (const void *) DataPool_MntAdr[i];
+        shmid = DataPool_shmid[i];
+        if (shmdt(shmaddr) != 0) 
+        {
+            printf("shmaddr Release is fail!\n");
+            printf("ppMountAdr is :0x%x\n", (unsigned int) shmaddr);
+        }
+        else
+        {
+            printf("shmaddr Release is success!\n");
+        }
+    }
+}
+//删除共享内存
+void Shared_memory_Delete(void)
+{
+    int shmid = 0, i = 0;
+
+    const void *shmaddr;
+    for(i=0; i<_MAX_KEYMAP_NUM_; i++) 
+    {
+        shmaddr = (const void *) DataPool_MntAdr[i];
+        shmid = DataPool_shmid[i];
+        if (shmdt(shmaddr) != 0) 
+        {
+            printf("shmaddr Release is fail!\n");
+            printf("ppMountAdr is :0x%x\n", (unsigned int) shmaddr);
+        }
+        else
+        {
+            printf("shmaddr Release is success!\n");
+            if(shmctl(shmid,IPC_RMID,0) == -1)
+                printf("delete share memory fail!\n");
+            else
+                printf("delete share memory success!\n");
+        }
+    }    
+}
+//删除信号量
+void Semaphore_Delete(void)
+{
+    union semun
+    {
+        int val;
+        struct semid_ds *buf;
+        ushort *array;
+    }sem_union;
+    unsigned int i=0;
+    for(i=0; i<_MAX_KEYMAP_NUM_; i++) 
+    {
+        if(semctl(DataPool_semid[i],0,IPC_RMID,sem_union) ==-1)
+        {
+            printf("delete Semaphore fail!\n");
+        }
+        else
+        {
+            printf("delete Semaphore success!\n");
+        }
+    }
+}
+
+
+static void Share_WR(void *pD, void *pS, unsigned int Len, char WR)
+{
+    if( (WR == 'W') || (WR == 'w') )
+        memcpy( pD, pS, Len );
+    else
+        memcpy( pS, pD, Len );
+}
+/*
+  参数processnum
+  0  表示统计进程
+  1  表示参数进程
+  2  表示104进程
+  3  表示101进程
+  4  表示采集进程
+  5  预留
+  255表示写数据全部关闭
+ */
+void Shared_memory_Apply(char Typ, char WR,unsigned int ProcessNum)
+{
+    if( (WR != 'W')&&(WR != 'w')&&(WR != 'R')&&(WR != 'r') )
+    {
+        printf("Shared_memory_Apply():Input Arg(WR) is Err!\n");
+        return ;
+    }
+    
+    unsigned char *pAdr = 0;
+    unsigned char *pMem = 0;
+    unsigned int Len = 0;
+    int SemID = -1;
+    
+    int i = 0, IsOK = 0;
+    for(i=0; i<_MAX_KEYMAP_NUM_; i++)
+    {
+        if(Typ == SHKeyMap[i].ChrFlg)
+        {
+            pAdr    = (unsigned char *)( *((unsigned int *)(SHKeyMap[i].ppMountAdr)) );
+            pMem    = (unsigned char *)SHKeyMap[i].pLocalAdr;
+            Len     = SHKeyMap[i].Len;
+            SemID   = *((int *)(SHKeyMap[i].pSemID));
+            IsOK    = 1;
+            break;
+        }
+    }
+    if(IsOK == 0)
+    {
+        printf("Shared_memory_Apply():Input Arg(Typ) is Err!\n");
+        return;
+    }
+    
+    //printf("p(%d) begin \n", SemID);
+    if((WR == 'W')||(WR == 'w'))  //写操作 锁住信号量集的所有元素
+    {
+        sem_p(SemID,255);
+        //printf("p() is OK W\n");
+        Share_WR(pAdr, pMem, Len, WR);
+        sem_v(SemID,255);
+        //printf("v() is OK W\n");
+    }
+    else    //读操作 仅给信号量集中的自身元素进行加锁
+    {
+        sem_p(SemID,ProcessNum);
+        //printf("p() is OK R\n");        
+        Share_WR(pAdr, pMem, Len, WR);
+        sem_v(SemID,ProcessNum);
+        //printf("v() is OK R\n");
+    }
+}
+
+void KickDog(unsigned int processnum)
+{
+    if(processnum >= PROCESSNUM) return;
+    unsigned char num = 1<<processnum;
+    Shared_memory_Apply(22, 'R', processnum);
+    if((AllProcess.Total.all & num) == 0) return;
+    AllProcess.Total.all &= ~num;
+    Shared_memory_Apply(22, 'W', processnum);
+}
+
+
+
