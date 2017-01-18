@@ -17,6 +17,8 @@ extern "C" {
 #define MAXYCNUM	128	
 #define MAXYXNUM	128
 
+#define DEVPACKETSIZE 1540
+
 
 typedef  struct 
 {
