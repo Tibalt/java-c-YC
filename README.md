@@ -2,8 +2,9 @@
 
 The demo shows the communication between a java server and C client on tcp socket on a little endian machine. 
 
-The data which is sent out by C client covers the float, int and char to show the way to deal with endian issue and unsigned char in java.
+The data structure which is sent out by C client in "binary"(without encoding by ASCII) covers the float, int and char to show the way to deal with endian issue and unsigned char in java.
 
+This is a good way to improve the efficiency but loses compatibility becasue it works only on little endian machine.
 
 typedef struct
 {
